@@ -1,24 +1,14 @@
 package edu.temple.cis.c3238.banksim;
-
-import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.Semaphore;
+/**
+ * My implementation leverages the fact that semaphores can be initialized
+ * with multiple charges. By initializing as many charges as we have threads
+ * I can provide the desired sync using a single object.
+ */
 
 /**
  * @author Cay Horstmann
  * @author Modified by Paul Wolfgang
- */
-/**
- * 1) Create a new thread in which testing summing the amounts in each account 
- * is running on its own thread
- * 2) Code protection such that the new testing thread and any transfer threads
- *	are mutually exclusive
- *		i. Testing thread starts by sending signal to all transfer threads
- *		ii. Waits for all transferring threads to finish current transfer
- *		iii. resumes testing task and transfer threads wait until test is done
- *		NOTE: Unrelated transfers must be able to proceed concurrently
- * @author fury
  */
 public class Bank {
 
@@ -28,32 +18,40 @@ public class Bank {
     private final int initialBalance;
     private final int numAccounts;
     private boolean open;
-	public AtomicBoolean testLock = new AtomicBoolean();
-	
+    public Semaphore transferingSem;
+    public int testCount;
+    private Thread testThread;
     public Bank(int numAccounts, int initialBalance) {
         open = true;
         this.initialBalance = initialBalance;
         this.numAccounts = numAccounts;
         accounts = new Account[numAccounts];
-        for (int i = 0; i < numAccounts; i++) {
+        for (int i = 0; i < accounts.length; i++) {
             accounts[i] = new Account(this, i, initialBalance);
         }
-		testLock.set(false);
+        ntransacts = 0;
+	transferingSem=new Semaphore(this.numAccounts);
+	testCount=0;	
     }
 
     public void transfer(int from, int to, int amount) {
-		//if its false, keep it false, and return true which ends loop
-		while(!testLock.compareAndSet(false,false));
-		accounts[from].waitForAvailableFunds(amount);
+        accounts[from].waitForAvailableFunds(amount);
         if (!open) return;
-		if (accounts[from].withdraw(amount)) {
-			accounts[to].deposit(amount);
-		}		
-		if (shouldTest()) test();
+	try{
+	    transferingSem.acquire();
+	    ///////////CS START////////////////////
+	    if (accounts[from].withdraw(amount)) {
+		accounts[to].deposit(amount);
+	    }
+	    //////////CS END///////////////////
+	}
+	catch(InterruptedException e){}
+	finally{transferingSem.release();}
+        if (shouldTest()) test();
     }
 
     public void test() {
-		Thread testThread = new testThread(this, accounts, initialBalance);
+        testThread=new testThread(this,accounts, numAccounts,initialBalance);
 		testThread.start();
     }
 
@@ -67,7 +65,6 @@ public class Bank {
         synchronized (this) {
             open = false;
         }
-		//notify each account on its lock
         for (Account account : accounts) {
             synchronized(account) {
                 account.notifyAll();
